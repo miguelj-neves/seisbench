@@ -16,7 +16,7 @@ class DeepDenoiser(WaveformModel):
     _annotate_args = WaveformModel._annotate_args.copy()
     _annotate_args["overlap"] = (_annotate_args["overlap"][0], 1500)
 
-    def __init__(self, sampling_rate=100, **kwargs):
+    def __init__(self, sampling_rate=100, dropout=0, **kwargs):
         citation = (
             "Zhu, W., Mousavi, S. M., & Beroza, G. C. (2019). "
             "Seismic signal denoising and decomposition using deep neural networks. "
@@ -34,33 +34,37 @@ class DeepDenoiser(WaveformModel):
             grouping="channel",
             **kwargs,
         )
+        self.drop_rate = dropout
 
         self.inc = nn.Conv2d(2, 8, (3, 3), padding=(1, 1), bias=False)
         self.in_bn = nn.BatchNorm2d(8, eps=1e-3)
+        self.in_dropout = nn.Dropout(self.drop_rate)
 
         self.down_conv_blocks = nn.ModuleList(
-            [DownConvBlock(8 * 2 ** max(0, i - 1), 8 * 2**i) for i in range(5)]
+            [DownConvBlock(8 * 2 ** max(0, i - 1), 8 * 2**i, dropout=self.drop_rate) for i in range(5)]
         )
 
         self.conv5 = nn.Conv2d(128, 256, (3, 3), padding=(1, 1), bias=False)
         self.bn5 = nn.BatchNorm2d(256, eps=1e-3)
+        self.dropout5 = nn.Dropout(self.drop_rate)
 
         self.up_conv_blocks = nn.ModuleList(
-            [UpConvBlock(8 * 2 ** (5 - i), 8 * 2 ** (4 - i)) for i in range(5)]
+            [UpConvBlock(8 * 2 ** (5 - i), 8 * 2 ** (4 - i), dropout=self.drop_rate) for i in range(5)]
         )
 
         self.outc = nn.Conv2d(8, 2, (1, 1), bias=True)
 
     def forward(self, x):
         x = torch.relu(self.in_bn(self.inc(x)))
-
+        x = self.in_dropout(x)
         mids = []
         for layer in self.down_conv_blocks:
             x, mid = layer(x)
             mids.append(mid)
 
         x = torch.relu(self.bn5(self.conv5(x)))
-
+        x = self.dropout5(x)
+        
         for layer, mid in zip(self.up_conv_blocks, mids[::-1]):
             x = layer(x, mid)
 
@@ -168,13 +172,16 @@ class DeepDenoiser(WaveformModel):
 
 
 class DownConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, dropout):
         super().__init__()
 
         self.conv1 = nn.Conv2d(
             in_channels, out_channels, (3, 3), padding=(1, 1), bias=False
         )
         self.bn1 = nn.BatchNorm2d(out_channels, eps=1e-3)
+
+        self.dropout1 = nn.Dropout(dropout)
+
         self.conv2 = nn.Conv2d(
             out_channels,
             out_channels,
@@ -185,8 +192,12 @@ class DownConvBlock(nn.Module):
         )
         self.bn2 = nn.BatchNorm2d(out_channels, eps=1e-3)
 
+        self.dropout2 = nn.Dropout(dropout)
+
     def forward(self, x):
         x = torch.relu(self.bn1(self.conv1(x)))
+        x = self.dropout1(x)
+
         mid = x
 
         # Required for compatibility with tensorflow version - stride is treated differently otherwise
@@ -207,29 +218,33 @@ class DownConvBlock(nn.Module):
             x = x[:, :, :, 1:]  # Remove padding
 
         x = torch.relu(self.bn2(x))
+        x = self.dropout2(x)
 
         return x, mid
 
 
 class UpConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, dropout):
         super().__init__()
 
         self.conv1 = nn.ConvTranspose2d(
             in_channels, out_channels, (3, 3), stride=(2, 2), padding=(0, 0), bias=False
         )
         self.bn1 = nn.BatchNorm2d(out_channels, eps=1e-3)
-
+        self.dropout1 = nn.Dropout(dropout)
         # Again in_channels to account for the added residual connections
         self.conv2 = nn.Conv2d(
             in_channels, out_channels, (3, 3), padding=(1, 1), bias=False
         )
         self.bn2 = nn.BatchNorm2d(out_channels, eps=1e-3)
+        self.dropout2 = nn.Dropout(dropout)
 
     def forward(self, x, mid):
         x = self.conv1(x)
 
         x = torch.relu(self.bn1(x))
+
+        x = self.dropout1(x)
 
         # Truncation is necessary to get correct shapes and be compatible with tensorflow implementation
         if mid.shape[2] % 2 == 0:
@@ -245,5 +260,7 @@ class UpConvBlock(nn.Module):
         x = torch.cat([mid, x], dim=1)
 
         x = torch.relu(self.bn2(self.conv2(x)))
+
+        x = self.dropout2(x)
 
         return x
