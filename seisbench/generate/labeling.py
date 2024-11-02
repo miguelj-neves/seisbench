@@ -177,7 +177,9 @@ class PickLabeller(SupervisedLabeller, ABC):
     ):
         """
         Generate label columns dict and list of labels from label_columns list or dict.
-        Always appends a noise column at the end.
+        Always appends a noise column at the end by searching for 'n' or 'N' in model_labels.
+        The indices of the labels are set automatically by the order of the given model_labels, e.g. 'PSN' results in
+        label_ids {'Noise': 2, 'P': 0, 'S': 1}.
 
         :param label_columns: List of label columns or dict[label_columns -> labels]
         :param noise_column: If False, disables normalization of phases and noise label, default is True
@@ -196,10 +198,13 @@ class PickLabeller(SupervisedLabeller, ABC):
                 label: [*model_labels].index(label) for label in labels
             }  # label ids for P and S
             if noise_column:
-                if "n" in [*model_labels]:
-                    label_ids["Noise"] = [*model_labels].index("n")
+                if "n" in (label.lower() for label in model_labels):
+                    label_ids["Noise"] = [
+                        label.lower() for label in model_labels
+                    ].index("n")
                 else:
-                    label_ids["Noise"] = max(*label_ids.values()) + 1
+                    # The -1 is required if label_ids contains 0 or 1 values
+                    label_ids["Noise"] = max(*label_ids.values(), -1) + 1
                 labels.append("Noise")
         else:
             if noise_column:

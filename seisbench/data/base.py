@@ -313,12 +313,14 @@ class WaveformDataset:
         if value is None:
             value = seisbench.config["component_order"]
             seisbench.logger.warning(
-                f"Component order not specified, defaulting to '{value}'."
+                f"Output component order not specified, defaulting to '{value}'."
             )
             # Use get to avoid error if no component_order is set.
             if value != self.data_format.get("component_order"):
                 seisbench.logger.warning(
-                    f"Default component order '{value}' does not match dataset component order '{self.data_format.get('component_order')}'."
+                    f"Default output component order '{value}' does not match "
+                    f"dataset component order '{self.data_format.get('component_order')}'. "
+                    f"Please make sure this is intended."
                 )
 
         if self.missing_components is not None:
@@ -1162,7 +1164,7 @@ class WaveformDataset:
 
         if pack:
             waveforms = [waveforms[segment] for segment in segments]
-            waveforms = self._pad_packed_sequence(waveforms)
+            waveforms = seisbench.util.pad_packed_sequence(waveforms)
 
             # Impose correct dimension order
             waveforms = waveforms.transpose(*self._dimension_mapping)
@@ -1433,29 +1435,6 @@ class WaveformDataset:
                     / source_sampling_rate
                 )
                 return scipy.signal.resample(waveform, num, axis=sample_axis)
-
-    @staticmethod
-    def _pad_packed_sequence(seq):
-        """
-        Packs a list of arrays into one array by adding a new first dimension and padding where necessary.
-
-        :param seq:
-        :return:
-        """
-        max_size = np.array(
-            [max([x.shape[i] for x in seq]) for i in range(seq[0].ndim)]
-        )
-
-        new_seq = []
-        for i, elem in enumerate(seq):
-            d = max_size - np.array(elem.shape)
-            if (d != 0).any():
-                pad = [(0, d_dim) for d_dim in d]
-                new_seq.append(np.pad(elem, pad, "constant", constant_values=0))
-            else:
-                new_seq.append(elem)
-
-        return np.stack(new_seq, axis=0)
 
     def plot_map(self, res="110m", connections=False, **kwargs):
         """

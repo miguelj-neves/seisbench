@@ -1,4 +1,5 @@
 import warnings
+from typing import Any
 
 import numpy as np
 import scipy.signal
@@ -7,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import seisbench.util as sbu
+import seisbench.util.arraytools
 
 from .base import ActivationLSTMCell, CustomLSTM, WaveformModel
 
@@ -278,44 +280,45 @@ class EQTransformer(WaveformModel):
 
         return tuple(outputs)
 
-    def annotate_window_post(self, pred, piggyback=None, argdict=None):
-        # Combine predictions in one array
+    def annotate_batch_post(
+        self, batch: torch.Tensor, piggyback: Any, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        # Transpose predictions to correct shape
+        batch = torch.stack(batch, dim=-1)
         prenan, postnan = argdict.get(
             "blinding", self._annotate_args.get("blinding")[1]
         )
-        pred = np.stack(pred, axis=-1)
         if prenan > 0:
-            pred[:prenan] = np.nan
+            batch[:, :prenan] = np.nan
         if postnan > 0:
-            pred[-postnan:] = np.nan
-        return pred
+            batch[:, -postnan:] = np.nan
+        return batch
 
-    def annotate_window_pre(self, window, argdict):
-        # Add a demean and an amplitude normalization step to the preprocessing
-        window = window - np.mean(window, axis=-1, keepdims=True)
+    def annotate_batch_pre(
+        self, batch: torch.Tensor, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        batch = batch - batch.mean(axis=-1, keepdims=True)
         if self.norm_detrend:
-            detrended = np.zeros(window.shape)
-            for i, a in enumerate(window):
-                detrended[i, :] = scipy.signal.detrend(a)
-            window = detrended
+            batch = sbu.torch_detrend(batch)
         if self.norm_amp_per_comp:
-            amp_normed = np.zeros(window.shape)
-            for i, a in enumerate(window):
-                amp_normed[i, :] = a / (np.max(np.abs(a)) + 1e-10)
-            window = amp_normed
+            peak = batch.abs().max(axis=-1, keepdims=True)[0]
+            batch = batch / (peak + 1e-10)
         else:
             if self.norm == "std":
-                window = window / (np.std(window) + 1e-10)
+                std = batch.std(axis=(-1, -2), keepdims=True)
+                batch = batch / (std + 1e-10)
             elif self.norm == "peak":
-                peak = np.max(np.abs(window), axis=-1, keepdims=True) + 1e-10
-                window = window / peak
+                peak = batch.abs().max(axis=-1, keepdims=True)[0]
+                batch = batch / (peak + 1e-10)
 
         # Cosine taper (very short, i.e., only six samples on each side)
-        tap = 0.5 * (1 + np.cos(np.linspace(np.pi, 2 * np.pi, 6)))
-        window[:, :6] *= tap
-        window[:, -6:] *= tap[::-1]
+        tap = 0.5 * (
+            1 + torch.cos(torch.linspace(np.pi, 2 * np.pi, 6, device=batch.device))
+        )
+        batch[:, :, :6] *= tap
+        batch[:, :, -6:] *= tap.flip(dims=(0,))
 
-        return window
+        return batch
 
     @property
     def phases(self):
@@ -360,12 +363,10 @@ class EQTransformer(WaveformModel):
         model_args = super().get_model_args()
         for key in [
             "citation",
-            "in_samples",
             "output_type",
             "default_args",
             "pred_sample",
             "labels",
-            "sampling_rate",
         ]:
             del model_args[key]
 
@@ -377,6 +378,9 @@ class EQTransformer(WaveformModel):
         model_args["drop_rate"] = self.drop_rate
         model_args["original_compatible"] = self.original_compatible
         model_args["sampling_rate"] = self.sampling_rate
+        model_args["norm"] = self.norm
+        model_args["norm_amp_per_comp"] = self.norm_amp_per_comp
+        model_args["norm_detrend"] = self.norm_detrend
 
         return model_args
 

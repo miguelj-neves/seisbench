@@ -1,4 +1,5 @@
 import itertools
+from typing import Any
 
 import numpy as np
 import obspy
@@ -45,6 +46,7 @@ class PhaseTEAM(WaveformModel):
             labels=phases,
             sampling_rate=sampling_rate,
             grouping=AlphabeticFullGroupingHelper(max_stations=max_stations),
+            allow_padding=True,
             **kwargs,
         )
 
@@ -139,33 +141,33 @@ class PhaseTEAM(WaveformModel):
         else:
             return torch.sigmoid(y)
 
-    def annotate_window_pre(self, window, argdict):
-        # Add a demean and normalize step to the preprocessing
-        window = window - np.mean(window, axis=-1, keepdims=True)
+    def annotate_batch_pre(
+        self, batch: torch.Tensor, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        batch = batch - batch.mean(axis=-1, keepdims=True)
 
         if self.norm == "std":
-            std = np.std(window, axis=-1, keepdims=True)
-            std[std == 0] = 1  # Avoid NaN errors
-            window = window / std
+            std = batch.std(axis=-1, keepdims=True)
+            batch = batch / std.clip(1e-10)
         elif self.norm == "peak":
-            peak = np.max(np.abs(window), axis=-1, keepdims=True) + 1e-10
-            window = window / peak
+            peak = batch.abs().max(axis=-1, keepdims=True)[0]
+            batch = batch / (peak + 1e-10)
 
         # Pad with zeros
-        if window.shape[0] < self.max_stations:
-            window = np.pad(
-                window,
-                [(0, self.max_stations - window.shape[0]), (0, 0), (0, 0)],
-                "constant",
-                constant_values=0,
+        if batch.shape[1] < self.max_stations:
+            batch = torch.nn.functional.pad(
+                batch,
+                (0, 0, 0, 0, 0, self.max_stations - batch.shape[1]),
+                mode="constant",
+                value=0,
             )
 
-        return window
+        return batch
 
-    def annotate_window_post(self, pred, piggyback=None, argdict=None):
-        # Transpose predictions to correct shape
-        pred = np.swapaxes(pred, -2, -1)
-        return pred
+    def annotate_batch_post(
+        self, batch: torch.Tensor, piggyback: Any, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        return batch.transpose(-1, -2)
 
 
 class Encoder(nn.Module):

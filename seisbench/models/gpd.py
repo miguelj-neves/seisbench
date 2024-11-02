@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -108,9 +110,10 @@ class GPD(WaveformModel):
         else:
             return list(range(self.classes))
 
-    def annotate_window_pre(self, window, argdict):
-        # Add a demean step to the preprocessing
-        return window - np.mean(window, axis=-1, keepdims=True)
+    def annotate_batch_pre(
+        self, batch: torch.Tensor, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        return batch - batch.mean(axis=-1, keepdims=True)
 
     def classify_aggregate(self, annotations, argdict) -> sbu.ClassifyOutput:
         """

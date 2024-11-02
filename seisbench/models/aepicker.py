@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -100,19 +102,23 @@ class BasicPhaseAE(WaveformModel):
         else:
             return self.softmax(x_out)
 
-    def annotate_window_pre(self, window, argdict):
-        # Add a demean and normalize step to the preprocessing
-        window = window - np.mean(window, axis=-1, keepdims=True)
-        std = np.std(window, axis=-1, keepdims=True)
-        std[std == 0] = 1  # Avoid NaN errors
-        window = window / std
-        return window
+    def annotate_batch_pre(
+        self, batch: torch.Tensor, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        batch = batch - batch.mean(axis=-1, keepdims=True)
 
-    def annotate_window_post(self, pred, piggyback=None, argdict=None):
+        std = batch.std(axis=-1, keepdims=True)
+        batch = batch / std.clip(1e-10)
+
+        return batch
+
+    def annotate_batch_post(
+        self, batch: torch.Tensor, piggyback: Any, argdict: dict[str, Any]
+    ) -> torch.Tensor:
         # Transpose predictions to correct shape
-        pred[:, 130] = np.nan
-        pred[:, -130:] = np.nan
-        return pred.T
+        batch[..., 130] = np.nan
+        batch[..., -130:] = np.nan
+        return torch.transpose(batch, -1, -2)
 
     def classify_aggregate(self, annotations, argdict) -> sbu.ClassifyOutput:
         """

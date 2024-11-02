@@ -1,3 +1,5 @@
+from typing import Any
+
 import numpy as np
 import scipy.signal
 import torch
@@ -78,19 +80,35 @@ class DeepDenoiser(WaveformModel):
         # Simply use channel as label
         return stations[0].split(".")[-1]
 
-    def annotate_window_pre(self, window, argdict):
-        f, t, tmp_signal = scipy.signal.stft(
-            window, fs=self.sampling_rate, nperseg=30, nfft=60, boundary="zeros"
+    def annotate_batch_pre(
+        self, batch: torch.Tensor, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        # Reproduces scipy.signal.stft(window, fs=self.sampling_rate, nperseg=30, nfft=60, boundary="zeros")
+        # Note that the outputs need to be rotated by a factor of i ** dim to match numpy
+        tmp_signal = (
+            2
+            / 30
+            * torch.stft(
+                batch,
+                n_fft=60,
+                return_complex=True,
+                win_length=30,
+                window=torch.hann_window(30).to(batch.device),
+                pad_mode="constant",
+                normalized=False,
+            )
+            * torch.pow(1j, torch.arange(31, device=batch.device)).unsqueeze(-1)
         )
-        noisy_signal = np.stack([tmp_signal.real, tmp_signal.imag], axis=0)
 
-        noisy_signal[np.isnan(noisy_signal)] = 0
-        noisy_signal[np.isinf(noisy_signal)] = 0
+        noisy_signal = torch.stack([tmp_signal.real, tmp_signal.imag], dim=1)
+
+        noisy_signal[torch.isnan(noisy_signal)] = 0
+        noisy_signal[torch.isinf(noisy_signal)] = 0
 
         return self._normalize_batch(noisy_signal), noisy_signal
 
     @staticmethod
-    def _normalize_batch(data, window=200):
+    def _normalize_batch(data: torch.Tensor, window: int = 200) -> torch.Tensor:
         """
         Adapted from original DeepDenoiser implementation available at
         https://github.com/wayneweiqiang/DeepDenoiser/blob/7bd9284ece73e25c99db2ad101aacda2a215a41a/deepdenoiser/app.py#L72
@@ -98,36 +116,49 @@ class DeepDenoiser(WaveformModel):
         data shape: 2, nf, nt
         data: nbn, nf, nt, 2
         """
-        data = np.expand_dims(data, 0)  # 1 (nbt), 2, nf, nt
-        data = data.transpose(0, 2, 3, 1)  # nbn, nf, nt, 2
+        data = data.permute(0, 2, 3, 1)  # nbn, nf, nt, 2
         assert len(data.shape) == 4
         shift = window // 2
         nbt, nf, nt, nimg = data.shape
 
         # std in slide windows
-        data_pad = np.pad(
-            data, ((0, 0), (0, 0), (window // 2, window // 2), (0, 0)), mode="reflect"
+        data_pad = torch.nn.functional.pad(
+            data, (0, 0, window // 2, window // 2), mode="reflect"
         )
-        t = np.arange(0, nt + shift - 1, shift, dtype="int")  # 201 => 0, 100, 200
+        t = torch.arange(
+            0, nt + shift - 1, shift, device=data.device
+        )  # 201 => 0, 100, 200
 
-        std = np.zeros([nbt, len(t)])
-        mean = np.zeros([nbt, len(t)])
+        std = torch.zeros([nbt, len(t)], dtype=data.dtype, device=data.device)
+        mean = torch.zeros([nbt, len(t)], dtype=data.dtype, device=data.device)
         for i in range(std.shape[1]):
-            std[:, i] = np.std(
+            std[:, i] = torch.std(
                 data_pad[:, :, i * shift : i * shift + window, :], axis=(1, 2, 3)
             )
-            mean[:, i] = np.mean(
+            mean[:, i] = torch.mean(
                 data_pad[:, :, i * shift : i * shift + window, :], axis=(1, 2, 3)
             )
 
         std[:, -1], mean[:, -1] = std[:, -2], mean[:, -2]
         std[:, 0], mean[:, 0] = std[:, 1], mean[:, 1]
 
-        # normalize data with interplated std
-        t_interp = np.arange(nt, dtype="int")
-        std_interp = interp1d(t, std, kind="slinear")(t_interp)
+        # normalize data with interpolated std
+        interp_matrix = torch.zeros(3, 201, dtype=std.dtype, device=std.device)
+        interp_matrix[0, :101] = 1 - torch.linspace(
+            0, 1, 101, dtype=std.dtype, device=std.device
+        )
+        interp_matrix[1, :101] = torch.linspace(
+            0, 1, 101, dtype=std.dtype, device=std.device
+        )
+        interp_matrix[1, 100:] = 1 - torch.linspace(
+            0, 1, 101, dtype=std.dtype, device=std.device
+        )
+        interp_matrix[2, 100:] = torch.linspace(
+            0, 1, 101, dtype=std.dtype, device=std.device
+        )
+        std_interp = std @ interp_matrix
         std_interp[std_interp == 0] = 1.0
-        mean_interp = interp1d(t, mean, kind="slinear")(t_interp)
+        mean_interp = mean @ interp_matrix
 
         data = (data - mean_interp[:, np.newaxis, :, np.newaxis]) / std_interp[
             :, np.newaxis, :, np.newaxis
@@ -136,20 +167,26 @@ class DeepDenoiser(WaveformModel):
         if len(t) > 3:  # need to address this normalization issue in training
             data /= 2.0
 
-        data = data.transpose(0, 3, 1, 2)  # 1 (nbt), 2, nf, nt
-        data = data[0]  # Remove batch dim
+        data = data.permute(0, 3, 1, 2)  # 1 (nbt), 2, nf, nt
 
         return data
 
-    def annotate_window_post(self, pred, piggyback=None, argdict=None):
-        noisy_signal = piggyback
-        _, denoised_signal = scipy.signal.istft(
-            (noisy_signal[0] + noisy_signal[1] * 1j) * pred[0],
-            fs=self.sampling_rate,
-            nperseg=30,
-            nfft=60,
-            boundary="zeros",
+    def annotate_batch_post(
+        self, batch: torch.Tensor, piggyback: Any, argdict: dict[str, Any]
+    ) -> torch.Tensor:
+        signal = (piggyback[:, 0] + piggyback[:, 1] * 1j) * batch[:, 0]
+        signal = signal / torch.pow(
+            1j, torch.arange(signal.shape[-2], device=signal.device).unsqueeze(-1)
         )
+
+        denoised_signal = 15 * torch.istft(
+            signal,
+            n_fft=60,
+            win_length=30,
+            window=torch.hann_window(30).to(batch.device),
+            normalized=False,
+        )
+
         return denoised_signal
 
     def get_model_args(self):

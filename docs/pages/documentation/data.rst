@@ -19,6 +19,22 @@ They are very small datasets that can be used, for example, to demonstrate certa
     :undoc-members:
     :show-inheritance:
 
+AQ2009 dataset
+-----------------------------------
+
+.. automodule:: seisbench.data.aq2009
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+CREW dataset
+-----------------------------------
+
+.. automodule:: seisbench.data.crew
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 ETHZ dataset
 -----------------------------------
 .. automodule:: seisbench.data.ethz
@@ -69,6 +85,14 @@ LenDB dataset
     :undoc-members:
     :show-inheritance:
 
+LFE stack datasets
+-----------------------------------
+
+.. automodule:: seisbench.data.lfe_stacks
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 NEIC datasets
 -----------------------------------
 
@@ -77,13 +101,19 @@ NEIC datasets
     :undoc-members:
     :show-inheritance:
 
-OBS dataset
+OBS datasets
 -----------------------------------
 
 .. automodule:: seisbench.data.obs
     :members:
     :undoc-members:
     :show-inheritance:
+
+.. automodule:: seisbench.data.obst2024
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 
 PNW datasets
 -----------------------------------
@@ -113,6 +143,14 @@ TXED dataset
 -----------------------------------
 
 .. automodule:: seisbench.data.txed
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+VCSEIS dataset
+-----------------------------------
+
+.. automodule:: seisbench.data.vcseis
     :members:
     :undoc-members:
     :show-inheritance:
